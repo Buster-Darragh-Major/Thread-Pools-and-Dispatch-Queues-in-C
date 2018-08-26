@@ -30,3 +30,23 @@
 
 # Debug files
 *.dSYM/
+
+\.vscode/settings\.json
+
+*.pdf
+
+Makefile
+
+num-cores
+
+test1\.c
+
+test2\.c
+
+test3\.c
+
+test4\.c
+
+test5\.c
+
+testFor\.c
