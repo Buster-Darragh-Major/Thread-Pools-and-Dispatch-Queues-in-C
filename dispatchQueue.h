@@ -26,20 +26,30 @@
         void (*work)(void *);       // the function to perform
         void *params;               // parameters to pass to the function
         task_dispatch_type_t type;  // asynchronous or synchronous
+        struct task *next_task;      // the text task in the queue of tasks (struct because typedef not "finished" yet)
     } task_t;
     
+    typedef struct thread_pool {
+        dispatch_queue_thread_t *top_thread;
+    } thread_pool_t;
+
     typedef struct dispatch_queue_t dispatch_queue_t; // the dispatch queue type
     typedef struct dispatch_queue_thread_t dispatch_queue_thread_t; // the dispatch queue thread type
+    // The reason for these is really weird ^, just use the [ typedef struct foo {...} foo; ] in the furure
 
     struct dispatch_queue_thread_t {
         dispatch_queue_t *queue;// the queue this thread is associated with
         pthread_t thread;       // the thread which runs the task
         sem_t thread_semaphore; // the semaphore the thread waits on until a task is allocated
-        task_t *task;           // the current task for this tread
+        task_t *task;           // the current task for this thread
+        struct dispatch_queue_thread_t *next_thread; // The next thread in the thread pool
     };
 
     struct dispatch_queue_t {
         queue_type_t queue_type;            // the type of queue - serial or concurrent
+        task_t *head_task;
+        task_t *tail_task;
+        thread_pool_t *thread_pool;          // The queues associated thread pool
     };
     
     task_t *task_create(void (*)(void *), void *, char*);
@@ -50,12 +60,12 @@
     
     void dispatch_queue_destroy(dispatch_queue_t *);
     
-    int dispatch_async(dispatch_queue_t *, task_t *);
+    void dispatch_async(dispatch_queue_t *, task_t *);
     
-    int dispatch_sync(dispatch_queue_t *, task_t *);
+    void dispatch_sync(dispatch_queue_t *, task_t *);
     
     void dispatch_for(dispatch_queue_t *, long, void (*)(long));
     
-    int dispatch_queue_wait(dispatch_queue_t *);
+    void dispatch_queue_wait(dispatch_queue_t *);
 
 #endif	/* DISPATCHQUEUE_H */
