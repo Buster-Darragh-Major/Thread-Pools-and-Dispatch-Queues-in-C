@@ -6,10 +6,27 @@
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
 {
-    task_t *current_tail = queue->tail_task;
-
-    current_tail->next_task = task; // Set next task of current tail to be the new tail
+    // If the queue is empty the head task will be null
+    if (queue->head_task == NULL)
+    {
+        queue->head_task = task;
+    }
+    else // Else set the current tail's next task to be the queued task
+    {
+        task_t *current_tail = queue->tail_task;
+        current_tail->next_task = task; // Set next task of current tail to be the new tail
+    }
+    
+    // TODO: memory issues if the queue is empty bu a tail still exists?
     queue->tail_task = task; // Set new tail of queue to be current task
+}
+
+task_t* dequeue(dispatch_queue_t *queue)
+{
+    task_t *current_head = queue->head_task;
+    queue->head_task = current_head->next_task;
+
+    return current_head;
 }
 
 void push(thread_pool_t *thread_pool, dispatch_queue_thread_t *thread)
