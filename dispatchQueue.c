@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <sys/sysinfo.h>
 #include <pthread.h>
+#include <stdbool.h>
+#include <string.h>
 #include "dispatchQueue.h"
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
@@ -53,6 +55,34 @@ dispatch_queue_thread_t* pop(thread_pool_t *thread_pool)
 
 }
 
+bool is_empty(thread_pool_t *thread_pool) 
+{
+    if (thread_pool->top_thread!= NULL)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+struct run_task_args {
+    dispatch_queue_t *queue;
+    sem_t *semaphore;
+};
+
+void *run_task(void* ptr) 
+{
+    struct run_task_args *args = (struct run_task_args *)ptr;
+    for (;;) 
+    {
+        sem_wait(args->semaphore);
+        task_t *task = args->queue->head_task;
+        (task->work)(task->params);
+    }
+}
+
 // Creates a dispatch queue, probably setting up any associated threads and a linked list to be used by
 // the added tasks. The queueType is either CONCURRENT or SERIAL .
 // Returns: A pointer to the created dispatch queue.
@@ -69,13 +99,17 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queue_type)
     // Allocate as many threads as there are cores to the thread pool.
     for (int i = 0; i < number_of_cores; i++)
     {
-        dispatch_queue_thread_t *new_thread;
-        new_thread->queue = return_queue;
-        new_thread->thread = create_pthread();
-        new_thread->thread_semaphore = *sem;
+        pthread_t thread;
+
+        pthread_create(thread, NULL, run_task, NULL); // Run the run task polling function
+
+        dispatch_queue_thread_t *dispatch_queue_thread;
+        dispatch_queue_thread->queue = return_queue;
+        dispatch_queue_thread->pthread = thread;
+        dispatch_queue_thread->thread_semaphore = *sem;
         
         // Add thread to the pool
-        push(pool, new_thread);
+        push(pool, dispatch_queue_thread);
     }
 
     return_queue->thread_pool = pool;
@@ -120,7 +154,12 @@ void task_destroy(task_t *task)
 void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 {
     enqueue(queue, task);
-    queue->
+    thread_pool_t *thread_pool = queue->thread_pool;
+
+    dispatch_queue_thread_t *thread = thread_pool->top_thread;
+    pthread_create(thread->pthread, NULL, task->work, task->params);
+    pthread_join(thread, NULL);
+    
 }
 
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function
@@ -139,7 +178,6 @@ void dispatch_queue_wait(dispatch_queue_t *queue)
         task_t *task;
         queue->head_task;
 
-        task-
     }
    
 }
