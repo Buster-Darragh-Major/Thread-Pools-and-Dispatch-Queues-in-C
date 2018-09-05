@@ -41,9 +41,14 @@ void push(thread_pool_t *thread_pool, dispatch_queue_thread_t *thread)
         dispatch_queue_thread_t *current_top_thread = thread_pool->top_thread; // Get the current top thread in the pool stack
         thread->next_thread = current_top_thread; // Set the next thread from the current newly created thread to the current top thread
     }
+    else
+    {
+        thread_pool->top_thread = malloc(sizeof(dispatch_queue_thread_t));
+    }
 
     // Set the current top thread in the pool to the newly created thread regardless of whether one already exists
     thread_pool->top_thread = thread; 
+
 }
 
 dispatch_queue_thread_t* pop(thread_pool_t *thread_pool)
@@ -72,13 +77,18 @@ struct run_task_args {
     sem_t *semaphore;
 };
 
+// This task is intended to be run in a thread which is meant to run tasks from a dispatch_queue_t.
+// It works by looping through andchecking a related semaphore to the thread which indicates whether
+// the thread sghould be "Awake" or not. If the semaphore is posted to then the thread is awakened,
+// and the task first in the queue is dequed and executed. Once finished the sem_wait() is called
+// once again and the thread once again blocks.
 void *run_task(void* ptr) 
 {
     struct run_task_args *args = (struct run_task_args *)ptr;
-    for (;;) 
+    for (;;)
     {
-        sem_wait(args->semaphore);
-        task_t *task = args->queue->head_task;
+        sem_wait(args->semaphore); // TODO make dequeueing atomic
+        task_t *task = dequeue(args->queue);
         (task->work)(task->params);
     }
 }
@@ -91,25 +101,34 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queue_type)
     dispatch_queue_t *return_queue = malloc(sizeof(dispatch_queue_t));
     return_queue->queue_type = queue_type;
 
-    thread_pool_t *pool; // thead pool for associated queue
+    thread_pool_t *pool = malloc(sizeof(thread_pool_t)); // thead pool for associated queue
+    pool->top_thread = NULL;
     int number_of_cores = get_nprocs();
-    sem_t *sem;
+    sem_t *sem = malloc(sizeof(sem_t));
     sem_init(sem, 0, 0);
 
     // Allocate as many threads as there are cores to the thread pool.
+    // For each new thread create a new pthread and run the run_task() method on it.
+    // Description of run_task() is found in its header.
     for (int i = 0; i < number_of_cores; i++)
     {
-        pthread_t thread;
+        pthread_t thread = (pthread_t)malloc(sizeof(pthread_t));
 
-        pthread_create(thread, NULL, run_task, NULL); // Run the run task polling function
+        struct run_task_args *args = malloc(sizeof(struct run_task_args));
+        args->queue = return_queue;
+        sem_t *sem = (sem_t *)malloc(sizeof(sem_t));
+        sem_init(sem, 0, 0);
+        args->semaphore = sem;
+        pthread_create(&thread, NULL, (void *)run_task, (void *)args); // Run the run task polling function
 
-        dispatch_queue_thread_t *dispatch_queue_thread;
+        dispatch_queue_thread_t *dispatch_queue_thread = malloc(sizeof(dispatch_queue_thread_t));
         dispatch_queue_thread->queue = return_queue;
         dispatch_queue_thread->pthread = thread;
-        dispatch_queue_thread->thread_semaphore = *sem;
-        
+        dispatch_queue_thread->thread_semaphore = sem;
+
         // Add thread to the pool
         push(pool, dispatch_queue_thread);
+
     }
 
     return_queue->thread_pool = pool;
@@ -133,7 +152,7 @@ void dispatch_queue_destroy(dispatch_queue_t *queue)
 // Returns: A pointer to the created task.
 task_t *task_create(void (* work)(void *), void *param, char* name)
 {
-    task_t *task;
+    task_t *task = malloc(sizeof(task_t));
     strcpy(task->name, name);
     task->params = param;
     task->work = work;
@@ -154,12 +173,9 @@ void task_destroy(task_t *task)
 void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 {
     enqueue(queue, task);
-    thread_pool_t *thread_pool = queue->thread_pool;
-
-    dispatch_queue_thread_t *thread = thread_pool->top_thread;
-    pthread_create(thread->pthread, NULL, task->work, task->params);
-    pthread_join(thread, NULL);
-    
+    dispatch_queue_thread_t *thread = queue->thread_pool->top_thread;
+    sem_post(thread->thread_semaphore);
+    pthread_join(thread->pthread, NULL);
 }
 
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function
@@ -167,6 +183,8 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 void dispatch_async(dispatch_queue_t *queue, task_t *task)
 {
     enqueue(queue, task);
+    dispatch_queue_thread_t *thread = queue->thread_pool->top_thread;
+    sem_post(thread->thread_semaphore);
 }
 
 // Waits (blocks) until all tasks on the queue have completed. If new tasks are added to the queue
