@@ -6,7 +6,7 @@
 #include <string.h>
 #include "dispatchQueue.h"
 
-pthread_mutex_t queue_lock;
+pthread_mutex_t pool_lock;
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
 {
@@ -152,10 +152,17 @@ typedef struct wrapper_args {
     bool *ready;
 } wrapper_args_t;
 
+
+// This method is to be passed to a dispatch order desired to be synchronous. It is given an argument of
+// wrapper_args which contains a function to do work (work), parameters for the function (params) and a
+// pointer to a boolean variable (ready). The value of this pointer can be changed and will affect the 
+// state of the function that called / created the work_wrapper args struct instance. The function runs
+/// the given work function with the supplied params and then sets the ready to true, implying that any
+// other code that holds a reference to ready can identify a change in state of this particular function.
 void *work_wrapper(wrapper_args_t *args)
 {
-    (args->work)(args->params);
-    *(args->ready) = true;
+    (args->work)(args->params); // Do the work
+    *(args->ready) = true; // set ready to true
 }
 
 // Creates a task. work is the function to be called when the task is executed, param is a pointer to
@@ -188,18 +195,25 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 {
     bool ready = false;
 
+    // Create wrapper_args instance with the given task function and parameters, as well as the
+    // previously initialized boolean ready.
     wrapper_args_t *args = malloc(sizeof(wrapper_args_t));
     args->params = task->params;
     args->work = task->work;
     args->ready = &ready;
 
-    task->params = args;
-    task->work = (void (*)(void *))work_wrapper;// wrapped task
+    // For synchronous dispatch, create a wrapper function that is able to indicate the tate or "readiness"
+    // of the given task function. We will give the task function to this wrapper function as well as some
+    // indicator (ready) to assert when the task is finished.
+    task->params = args; // "Overwrite" the current task's arguments to be the created wrapper_args
+    task->work = (void (*)(void *))work_wrapper; // "Overwrite" the task's arguments to be the work wrapper function
 
-    enqueue(queue, task);
-    dispatch_queue_thread_t *thread = queue->thread_pool->top_thread;
-    sem_post(thread->thread_semaphore);
+    // Here we call the asynchronous function with our altered task which actually contains the wrapper function.
+    // While this still immediately returns, we now have the referenced ready variable, which we can use to
+    // assert the task's completion.
+    dispatch_async(queue, task);
 
+    // Wait for the referenced ready varable to turn to true before continuing, indicating the completion of the task.
     while (!ready);
 }
 
@@ -207,15 +221,15 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 // returns immediately, the task will be dispatched sometime in the future.
 void dispatch_async(dispatch_queue_t *queue, task_t *task)
 {
+    // Ensure that queueing the task, popping the top thread off the stack and awakening the thread are atomic.
+    pthread_mutex_lock(&pool_lock);
+
     enqueue(queue, task);
 
-    pthread_mutex_lock(&queue_lock);
-
-    dispatch_queue_thread_t *thread = queue->thread_pool->top_thread;
-    pop(queue->thread_pool);
+    dispatch_queue_thread_t *thread = pop(queue->thread_pool);
     sem_post(thread->thread_semaphore);
 
-    pthread_mutex_unlock(&queue_lock);
+    pthread_mutex_unlock(&pool_lock);
 }
 
 // Waits (blocks) until all tasks on the queue have completed. If new tasks are added to the queue
