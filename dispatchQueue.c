@@ -15,7 +15,9 @@
 #define WHT   "\x1B[37m"
 #define RESET "\x1B[0m"
 
+// todo: make local?
 pthread_mutex_t pool_lock;
+pthread_mutex_t queue_lock;
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
 {
@@ -32,14 +34,37 @@ void enqueue(dispatch_queue_t *queue, task_t *task)
     
     // TODO: memory issues if the queue is empty bu a tail still exists?
     queue->tail_task = task; // Set new tail of queue to be current task
+    #ifdef DEBUG
+    printf(CYN "Task %p:\tQueued\n" RESET, task);
+    #endif
 }
 
 task_t* dequeue(dispatch_queue_t *queue)
 {
+     #ifdef DEBUG
+    printf(BLU "Task %p:\tDequeued, %p is now the head task\n" RESET, queue->head_task, queue->head_task->next_task);
+    #endif
+
     task_t *current_head = queue->head_task;
     queue->head_task = current_head->next_task;
 
     return current_head;
+}
+
+bool queue_is_empty(dispatch_queue_t *queue)
+{
+    if (queue->head_task == NULL)
+    {
+        #ifdef DEBUG
+        printf(RED "Task queue is empty!\n" RESET);
+        #endif
+
+        return true;
+    }
+    else
+    {
+        return false;
+    }
 }
 
 void push(thread_pool_t *thread_pool, dispatch_queue_thread_t *thread)
@@ -108,12 +133,22 @@ void *run_task(void* ptr)
         pthread_t pthread = pthread_self();
         int *sem_value = malloc(sizeof(int));
         sem_getvalue(args->semaphore, sem_value);
-        printf(BLU "Thread %lx:\tValue of semaphore:\t%i\n" RESET, pthread, *sem_value);
-        printf(YEL "Thread %lx:\tAwake!\n" RESET, pthread);
+        printf(YEL "Thread %lx:\tAwakened!\n" RESET, pthread);
         #endif
 
-        task_t *task = dequeue(args->queue);
-        (task->work)(task->params);
+        task_t *task = dequeue(args->queue); // TODO: LOCK!!!!!!!!!!!!
+        (task->work)(task->params); // After this point the thread this runs in is returned to the thread pool
+
+        // After this if there are any tasks in the queue then run em!
+        pthread_mutex_lock(&queue_lock);
+        while (!queue_is_empty(args->queue))
+        {
+            // TODO: propably pop and push thread again
+            task_t *task = dequeue(args->queue);
+            pthread_mutex_unlock(&queue_lock);
+            (task->work)(task->params);
+        }
+        pthread_mutex_unlock(&queue_lock); // Unlock if doent enter while loop
     }
 }
 
@@ -277,7 +312,7 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
     // Ensure that queueing the task, popping the top thread off the stack and awakening the thread are atomic.
     pthread_mutex_lock(&pool_lock);
 
-    if (!is_empty(queue->thread_pool)) 
+    if (!is_empty(queue->thread_pool)) // There are thread available to use
     {
         // Add a task wrapper here that takes the thread and the thread pool and pushes it back when the taskj is finished.
         dispatch_queue_thread_t *thread = pop(queue->thread_pool);
@@ -295,10 +330,11 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
         enqueue(queue, task);
         sem_post(thread->thread_semaphore);
     }
-    else
+    else // All threads are currently occupied
     {
+        enqueue(queue, task); // Queue the task anyway
         #ifdef DEBUG
-        printf(RED "Thread pool is empty!\n");
+        printf(RED "Thread pool is empty!\n" RESET);
         #endif
     }
 
