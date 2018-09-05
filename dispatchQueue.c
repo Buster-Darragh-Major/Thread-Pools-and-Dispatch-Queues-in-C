@@ -143,10 +143,10 @@ void *run_task(void* ptr)
 
         task_t *task = dequeue(args->queue);
         pthread_mutex_unlock(&queue_lock);
+        (task->work)(task->params); 
         // After this point the thread this runs in is pushed to the thread pool
         // ***NOTE*** The thread pool also becomes locked after the thread is pushed to allow for any potential
         // re-popping of the thread further down.
-        (task->work)(task->params); 
 
         bool entered_loop;
         dispatch_queue_thread_t *this_thread;
@@ -166,6 +166,7 @@ void *run_task(void* ptr)
             task_t *task = dequeue(args->queue);
             pthread_mutex_unlock(&queue_lock);
             (task->work)(task->params); // Do the extra work
+            task->complete = true;
 
             pthread_mutex_lock(&queue_lock); // Ensures that checking if queue is empty and popping tasks is atomic
         }
@@ -273,6 +274,7 @@ task_t *task_create(void (* work)(void *), void *param, char* name)
     strcpy(task->name, name);
     task->params = param;
     task->work = work;
+    task->complete = false;
 
     return task;
 }
@@ -318,12 +320,13 @@ typedef struct pushback_wrapper_args {
     void *params;
     dispatch_queue_t *queue;
     dispatch_queue_thread_t *thread;
+    bool *complete;
 } pushback_wrapper_args_t;
 
 // This wrapper function is intended to take a piece of work and its arguments, along with a reference to that piece 
 // of work's disptach_queue_thread_t and dispatch_queue_t, and to push them back onto the stack when the work is 
 // completed. This work itself could potentially be either a synchronous or asynchronous task, but never the less
-// the task will onlt have it's thread pushed back onto the thread pool on completion.
+// the task will onlY have it's thread pushed back onto the thread pool on completion.
 void *pushback_wrapper(pushback_wrapper_args_t *args) 
 {
     (args->work)(args->params); // Do the work
@@ -331,6 +334,7 @@ void *pushback_wrapper(pushback_wrapper_args_t *args)
     // no further unclaimed tasks and cannot repush/repop itself.
     pthread_mutex_lock(&pool_lock); 
     push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
+    *(args->complete) = true;
 }
 
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function
@@ -351,6 +355,7 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
         pushback_args->params = task->params;
         pushback_args->thread = thread;
         pushback_args->queue = queue;
+        pushback_args->complete = &(task->complete);
 
         task->work = (void (*)(void *))pushback_wrapper; // "Overwrite" current task work args
         task->params = pushback_args; // "Overwrite" current task args
@@ -372,17 +377,48 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
     
 }
 
+
+bool contains_incomplete_tasks(task_t *tasks[], int size) {
+    for (int i = 0; i < size; i++)
+    {
+        if (tasks[i]->complete == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Waits (blocks) until all tasks on the queue have completed. If new tasks are added to the queue
 // after this is called they are ignored.
 void dispatch_queue_wait(dispatch_queue_t *queue)
 {
-    if (queue->queue_type == SERIAL) //  Make a single thread for execution 
-    {
-        task_t *task;
-        queue->head_task;
+    pthread_mutex_lock(&queue_lock);
 
+    task_t *task = queue->head_task;
+    int number_of_tasks = 0;
+
+    // Determine lengt of list
+    while (task != NULL)
+    {
+        number_of_tasks++;
+        task = task->next_task;
     }
-   
+
+    // Make array of tasks big enough to fit all current tasks
+    task = queue->head_task;
+
+    task_t* tasks[number_of_tasks];
+    for (int i = 0; i < number_of_tasks; i++)
+    {
+        tasks[i] = task;
+        task = task->next_task;
+    }
+
+    pthread_mutex_unlock(&queue_lock);
+
+    // Wait while the array contains tasks that are incomplete
+    while(contains_incomplete_tasks(tasks, number_of_tasks));
 }
 
 // Executes the work function number of times (in parallel if the queue is CONCURRENT ). Each

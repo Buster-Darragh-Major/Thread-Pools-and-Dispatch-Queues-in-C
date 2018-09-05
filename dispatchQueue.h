@@ -11,6 +11,7 @@
 
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdbool.h>
     
 #define error_exit(MESSAGE)     perror(MESSAGE), exit(EXIT_FAILURE)
 
@@ -28,6 +29,7 @@
         void *params;               // parameters to pass to the function
         task_dispatch_type_t type;  // asynchronous or synchronous
         struct task *next_task;      // the text task in the queue of tasks (struct because typedef not "finished" yet)
+        bool complete;
     } task_t;
 
     typedef struct dispatch_queue_t dispatch_queue_t; // the dispatch queue type
@@ -36,6 +38,7 @@
 
     typedef struct thread_pool {
         dispatch_queue_thread_t *top_thread;
+        dispatch_queue_thread_t *delegate_thread;
     } thread_pool_t;
 
     struct dispatch_queue_thread_t {
