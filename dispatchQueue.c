@@ -6,6 +6,15 @@
 #include <string.h>
 #include "dispatchQueue.h"
 
+#define RED   "\x1B[31m"
+#define GRN   "\x1B[32m"
+#define YEL   "\x1B[33m"
+#define BLU   "\x1B[34m"
+#define MAG   "\x1B[35m"
+#define CYN   "\x1B[36m"
+#define WHT   "\x1B[37m"
+#define RESET "\x1B[0m"
+
 pthread_mutex_t pool_lock;
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
@@ -58,13 +67,17 @@ dispatch_queue_thread_t* pop(thread_pool_t *thread_pool)
     dispatch_queue_thread_t *current_top = thread_pool->top_thread;
     thread_pool->top_thread = current_top->next_thread;
 
+    #ifdef DEBUG
+    printf(GRN "Thread %lx:\tPopped off the stack\n" RESET, current_top->pthread);
+    #endif
+
     return current_top;
 
 }
 
 bool is_empty(thread_pool_t *thread_pool) 
 {
-    if (thread_pool->top_thread!= NULL)
+    if (thread_pool->top_thread == NULL)
     {
         return true;
     }
@@ -90,6 +103,15 @@ void *run_task(void* ptr)
     for (;;)
     {
         sem_wait(args->semaphore); // TODO make dequeueing atomic
+
+        #ifdef DEBUG
+        pthread_t pthread = pthread_self();
+        int *sem_value = malloc(sizeof(int));
+        sem_getvalue(args->semaphore, sem_value);
+        printf(BLU "Thread %lx:\tValue of semaphore:\t%i\n" RESET, pthread, *sem_value);
+        printf(YEL "Thread %lx:\tAwake!\n" RESET, pthread);
+        #endif
+
         task_t *task = dequeue(args->queue);
         (task->work)(task->params);
     }
@@ -105,7 +127,17 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queue_type)
 
     thread_pool_t *pool = malloc(sizeof(thread_pool_t)); // thead pool for associated queue
     pool->top_thread = NULL;
-    int number_of_cores = get_nprocs();
+    int number_of_cores;
+
+    if (queue_type == CONCURRENT) // Concurrent queue gets thread pool of size |no of cores|
+    {
+        number_of_cores = get_nprocs();
+    }
+    else if (queue_type == SERIAL) // Serial queue gets 1 thread for queue
+    {
+        number_of_cores = 1;
+    }
+
     sem_t *sem = malloc(sizeof(sem_t));
     sem_init(sem, 0, 0);
 
@@ -212,7 +244,7 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
     // While this still immediately returns, we now have the referenced ready variable, which we can use to
     // assert the task's completion.
     dispatch_async(queue, task);
-
+   
     // Wait for the referenced ready varable to turn to true before continuing, indicating the completion of the task.
     while (!ready);
 }
@@ -226,10 +258,20 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
 
     enqueue(queue, task);
 
-    dispatch_queue_thread_t *thread = pop(queue->thread_pool);
-    sem_post(thread->thread_semaphore);
+    if (!is_empty(queue->thread_pool)) 
+    {
+        dispatch_queue_thread_t *thread = pop(queue->thread_pool);
+        sem_post(thread->thread_semaphore);
+    }
+    else
+    {
+        #ifdef DEBUG
+        printf(RED "Thread pool is empty!\n");
+        #endif
+    }
 
     pthread_mutex_unlock(&pool_lock);
+    
 }
 
 // Waits (blocks) until all tasks on the queue have completed. If new tasks are added to the queue
