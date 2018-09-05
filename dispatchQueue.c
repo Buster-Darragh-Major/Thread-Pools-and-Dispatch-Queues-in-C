@@ -86,12 +86,16 @@ void push(thread_pool_t *thread_pool, dispatch_queue_thread_t *thread)
     // Set the current top thread in the pool to the newly created thread regardless of whether one already exists
     thread_pool->top_thread = thread; 
 
+    #ifdef DEBUG
+    printf(MAG "Thread %lx:\tPushed onto the stack\n" RESET, thread->pthread);
+    #endif
 }
 
 dispatch_queue_thread_t* pop(thread_pool_t *thread_pool)
 {
     dispatch_queue_thread_t *current_top = thread_pool->top_thread;
     thread_pool->top_thread = current_top->next_thread;
+    current_top->next_thread = NULL; // Sever ties with next thread in pool
 
     #ifdef DEBUG
     printf(GRN "Thread %lx:\tPopped off the stack\n" RESET, current_top->pthread);
@@ -128,7 +132,7 @@ void *run_task(void* ptr)
     struct run_task_args *args = (struct run_task_args *)ptr;
     for (;;)
     {
-        sem_wait(args->semaphore); // TODO make dequeueing atomic
+        sem_wait(args->semaphore);
 
         #ifdef DEBUG
         pthread_t pthread = pthread_self();
@@ -139,18 +143,41 @@ void *run_task(void* ptr)
 
         task_t *task = dequeue(args->queue);
         pthread_mutex_unlock(&queue_lock);
-        (task->work)(task->params); // After this point the thread this runs in is returned to the thread pool
+        // After this point the thread this runs in is pushed to the thread pool
+        // ***NOTE*** The thread pool also becomes locked after the thread is pushed to allow for any potential
+        // re-popping of the thread further down.
+        (task->work)(task->params); 
+
+        bool entered_loop;
+        dispatch_queue_thread_t *this_thread;
 
         // After this if there are any tasks in the queue then run em!
         pthread_mutex_lock(&queue_lock);
+        if (!queue_is_empty(args->queue))
+        {
+            entered_loop = true;
+            // Guaranteed to be the same thread as this one is on because the pool has been locked since it has been pushed.
+            this_thread = pop(args->queue->thread_pool);
+            pthread_mutex_unlock(&pool_lock); // The thread has been popped 
+        }
+
         while (!queue_is_empty(args->queue))
         {
-            // TODO: propably pop and push thread again
             task_t *task = dequeue(args->queue);
             pthread_mutex_unlock(&queue_lock);
-            (task->work)(task->params);
+            (task->work)(task->params); // Do the extra work
+
+            pthread_mutex_lock(&queue_lock); // Ensures that checking if queue is empty and popping tasks is atomic
         }
-        pthread_mutex_unlock(&queue_lock); // Unlock if doent enter while loop
+
+        // If the loop was entered then this thread was popped again. Push it back
+        if (entered_loop)
+        {
+            push(args->queue->thread_pool, this_thread); // Push the thread back on after it was popped 
+        }
+
+        pthread_mutex_unlock(&pool_lock); // Unlock pool if doesnt enter while loop in case
+        pthread_mutex_unlock(&queue_lock); // Unlock anyway in case it doesnt enter while loop
     }
 }
 
@@ -300,11 +327,10 @@ typedef struct pushback_wrapper_args {
 void *pushback_wrapper(pushback_wrapper_args_t *args) 
 {
     (args->work)(args->params); // Do the work
+    // Lock the pool, this will be unlocked when the wrapped run_task wants to unlock it, i.e. when it has identified
+    // no further unclaimed tasks and cannot repush/repop itself.
+    pthread_mutex_lock(&pool_lock); 
     push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
-
-    #ifdef DEBUG
-    printf(MAG "Thread %lx:\tPushed onto the stack\n" RESET, args->thread->pthread);
-    #endif
 }
 
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function
