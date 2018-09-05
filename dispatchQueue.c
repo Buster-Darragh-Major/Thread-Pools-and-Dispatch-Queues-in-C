@@ -249,6 +249,27 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
     while (!ready);
 }
 
+typedef struct pushback_wrapper_args {
+    void (*work)(void *);
+    void *params;
+    dispatch_queue_t *queue;
+    dispatch_queue_thread_t *thread;
+} pushback_wrapper_args_t;
+
+// This wrapper function is intended to take a piece of work and its arguments, along with a reference to that piece 
+// of work's disptach_queue_thread_t and dispatch_queue_t, and to push them back onto the stack when the work is 
+// completed. This work itself could potentially be either a synchronous or asynchronous task, but never the less
+// the task will onlt have it's thread pushed back onto the thread pool on completion.
+void *pushback_wrapper(pushback_wrapper_args_t *args) 
+{
+    (args->work)(args->params); // Do the work
+    push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
+
+    #ifdef DEBUG
+    printf(MAG "Thread %lx:\tPushed onto the stack\n" RESET, args->thread->pthread);
+    #endif
+}
+
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function
 // returns immediately, the task will be dispatched sometime in the future.
 void dispatch_async(dispatch_queue_t *queue, task_t *task)
@@ -256,11 +277,22 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
     // Ensure that queueing the task, popping the top thread off the stack and awakening the thread are atomic.
     pthread_mutex_lock(&pool_lock);
 
-    enqueue(queue, task);
-
     if (!is_empty(queue->thread_pool)) 
     {
+        // Add a task wrapper here that takes the thread and the thread pool and pushes it back when the taskj is finished.
         dispatch_queue_thread_t *thread = pop(queue->thread_pool);
+
+        // Map current state onto args struct
+        pushback_wrapper_args_t *pushback_args = malloc(sizeof(pushback_wrapper_args_t)); 
+        pushback_args->work = task->work;
+        pushback_args->params = task->params;
+        pushback_args->thread = thread;
+        pushback_args->queue = queue;
+
+        task->work = (void (*)(void *))pushback_wrapper; // "Overwrite" current task work args
+        task->params = pushback_args; // "Overwrite" current task args
+
+        enqueue(queue, task);
         sem_post(thread->thread_semaphore);
     }
     else
