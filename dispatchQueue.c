@@ -6,6 +6,8 @@
 #include <string.h>
 #include "dispatchQueue.h"
 
+pthread_mutex_t queue_lock;
+
 void enqueue(dispatch_queue_t *queue, task_t *task)
 {
     // If the queue is empty the head task will be null
@@ -79,7 +81,7 @@ struct run_task_args {
 
 // This task is intended to be run in a thread which is meant to run tasks from a dispatch_queue_t.
 // It works by looping through andchecking a related semaphore to the thread which indicates whether
-// the thread sghould be "Awake" or not. If the semaphore is posted to then the thread is awakened,
+// the thread should be "Awake" or not. If the semaphore is posted to then the thread is awakened,
 // and the task first in the queue is dequed and executed. Once finished the sem_wait() is called
 // once again and the thread once again blocks.
 void *run_task(void* ptr) 
@@ -144,6 +146,18 @@ void dispatch_queue_destroy(dispatch_queue_t *queue)
     free(queue);
 }
 
+typedef struct wrapper_args {
+    void (*work)(void *);
+    void *params;
+    bool *ready;
+} wrapper_args_t;
+
+void *work_wrapper(wrapper_args_t *args)
+{
+    (args->work)(args->params);
+    *(args->ready) = true;
+}
+
 // Creates a task. work is the function to be called when the task is executed, param is a pointer to
 // either a structure which holds all of the parameters for the work function to execute with or a single
 // parameter which the work function uses. If it is a single parameter it must either be a pointer or
@@ -172,10 +186,21 @@ void task_destroy(task_t *task)
 // not return to the calling thread until the task has been completed.
 void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 {
+    bool ready = false;
+
+    wrapper_args_t *args = malloc(sizeof(wrapper_args_t));
+    args->params = task->params;
+    args->work = task->work;
+    args->ready = &ready;
+
+    task->params = args;
+    task->work = (void (*)(void *))work_wrapper;// wrapped task
+
     enqueue(queue, task);
     dispatch_queue_thread_t *thread = queue->thread_pool->top_thread;
     sem_post(thread->thread_semaphore);
-    pthread_join(thread->pthread, NULL);
+
+    while (!ready);
 }
 
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function
@@ -183,8 +208,14 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 void dispatch_async(dispatch_queue_t *queue, task_t *task)
 {
     enqueue(queue, task);
+
+    pthread_mutex_lock(&queue_lock);
+
     dispatch_queue_thread_t *thread = queue->thread_pool->top_thread;
+    pop(queue->thread_pool);
     sem_post(thread->thread_semaphore);
+
+    pthread_mutex_unlock(&queue_lock);
 }
 
 // Waits (blocks) until all tasks on the queue have completed. If new tasks are added to the queue
