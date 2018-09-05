@@ -137,7 +137,8 @@ void *run_task(void* ptr)
         printf(YEL "Thread %lx:\tAwakened!\n" RESET, pthread);
         #endif
 
-        task_t *task = dequeue(args->queue); // TODO: LOCK!!!!!!!!!!!!
+        task_t *task = dequeue(args->queue);
+        pthread_mutex_unlock(&queue_lock);
         (task->work)(task->params); // After this point the thread this runs in is returned to the thread pool
 
         // After this if there are any tasks in the queue then run em!
@@ -328,6 +329,8 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
         task->work = (void (*)(void *))pushback_wrapper; // "Overwrite" current task work args
         task->params = pushback_args; // "Overwrite" current task args
 
+
+        pthread_mutex_lock(&queue_lock);
         enqueue(queue, task);
         sem_post(thread->thread_semaphore);
     }
