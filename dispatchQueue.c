@@ -47,6 +47,7 @@ task_t* dequeue(dispatch_queue_t *queue)
 
     task_t *current_head = queue->head_task;
     queue->head_task = current_head->next_task;
+    current_head->next_task = NULL; // If task is added again later then ensure that any previous state is destroyed
 
     return current_head;
 }
