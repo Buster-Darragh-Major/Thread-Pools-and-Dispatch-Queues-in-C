@@ -443,8 +443,27 @@ void dispatch_queue_wait(dispatch_queue_t *queue)
 // function does not return until all iterations of the work function have completed.
 void dispatch_for(dispatch_queue_t *queue, long number, void (*work)(long))
 {
-    // Enter loop
-    for (long i = 0; i < number; i++) {
-
+    // If queue is concurrent then all tasks can be looped through and executed asynchrnonously, 
+    // as this method returns immediately the tasks can be queued all at once and as a result
+    // executed in a concurrent fashion.
+    if (queue->queue_type == CONCURRENT)
+    {
+        for (long i = 0; i < number; i++)
+        {
+            task_t *task = task_create((void (*)(void *))work, (void *)i, "Stub");
+            dispatch_async(queue, task);
+        }
     }
+    // If queue type is serial then it suffices to loop through and call all tasks synchronously,
+    // as this method only returns when the task is completed another task can only be called and
+    // queued once the previous tasks have completed.
+    else if(queue->queue_type == SERIAL)
+    {
+        for (long i = 0; i < number; i++)
+        {
+            task_t *task = task_create((void (*)(void *))work, (void *)i, "Stub");
+            dispatch_sync(queue, task);
+        }
+    }
+    dispatch_queue_wait(queue); // Wait for all tasks to finish before returning
 }
