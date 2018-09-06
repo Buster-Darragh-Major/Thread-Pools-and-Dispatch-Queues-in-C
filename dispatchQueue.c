@@ -15,7 +15,6 @@
 #define WHT   "\x1B[37m"
 #define RESET "\x1B[0m"
 
-// todo: make local?
 pthread_mutex_t pool_lock;
 pthread_mutex_t queue_lock;
 pthread_mutex_t in_progress_lock;
@@ -79,10 +78,6 @@ void push(thread_pool_t *thread_pool, dispatch_queue_thread_t *thread)
         dispatch_queue_thread_t *current_top_thread = thread_pool->top_thread; // Get the current top thread in the pool stack
         thread->next_thread = current_top_thread; // Set the next thread from the current newly created thread to the current top thread
     }
-    else
-    {
-        thread_pool->top_thread = malloc(sizeof(dispatch_queue_thread_t));
-    }
 
     // Set the current top thread in the pool to the newly created thread regardless of whether one already exists
     thread_pool->top_thread = thread; 
@@ -138,8 +133,6 @@ void *run_task(void* ptr)
 
         #ifdef DEBUG
         pthread_t pthread = pthread_self();
-        int *sem_value = malloc(sizeof(int));
-        sem_getvalue(args->semaphore, sem_value);
         printf(YEL "Thread %lx:\tAwakened!\n" RESET, pthread);
         #endif
 
@@ -206,9 +199,6 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queue_type)
         number_of_cores = 1;
     }
 
-    sem_t *sem = malloc(sizeof(sem_t));
-    sem_init(sem, 0, 0);
-
     // Allocate as many threads as there are cores to the thread pool.
     // For each new thread create a new pthread and run the run_task() method on it.
     // Description of run_task() is found in its header.
@@ -242,7 +232,38 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queue_type)
 // released and returned.
 void dispatch_queue_destroy(dispatch_queue_t *queue)
 {
-    // TODO: delete other stuff
+    // Loop through and free tasks
+    task_t *task = queue->head_task;
+    while(task != NULL)
+    {
+        task_t *task_to_destory = task;
+        task = task->next_task;
+        task_destroy(task_to_destory);
+    }
+
+    // Loop through and destory all in_progress elements
+    in_progress_list_t *in_progress_list = queue->in_progress_list;
+    in_progress_t *in_progress = in_progress_list->head;
+    while (in_progress != NULL)
+    {
+        in_progress_t *in_progress_to_destroy = in_progress;
+        in_progress = in_progress->next;
+        free(in_progress);
+    }
+    free(in_progress_list);
+
+    // Remove all threads off the stack
+    thread_pool_t *thread_pool = queue->thread_pool;
+    dispatch_queue_thread_t *thread = thread_pool->top_thread;
+    while (thread != NULL)
+    {
+        dispatch_queue_thread_t *thread_to_destroy = thread;
+        thread = thread->next_thread;
+        free(thread_to_destroy->thread_semaphore);
+        free(thread_to_destroy);
+    }
+    free(thread_pool);
+
     free(queue);
 }
 
@@ -287,7 +308,6 @@ task_t *task_create(void (* work)(void *), void *param, char* name)
 // task should be returned.
 void task_destroy(task_t *task)
 {
-    // TODO: release all other members of task
     free(task);
 }
 
