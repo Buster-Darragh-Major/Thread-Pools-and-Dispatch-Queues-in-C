@@ -118,7 +118,8 @@ bool is_empty(thread_pool_t *thread_pool)
     }
 }
 
-struct run_task_args {
+struct run_task_args 
+{
     dispatch_queue_t *queue;
     sem_t *semaphore;
 };
@@ -245,7 +246,8 @@ void dispatch_queue_destroy(dispatch_queue_t *queue)
     free(queue);
 }
 
-typedef struct wrapper_args {
+typedef struct wrapper_args 
+{
     void (*work)(void *);
     void *params;
     bool *ready;
@@ -317,7 +319,8 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
     while (!ready);
 }
 
-typedef struct pushback_wrapper_args {
+typedef struct pushback_wrapper_args 
+{
     void (*work)(void *);
     void *params;
     dispatch_queue_t *queue;
@@ -404,7 +407,8 @@ bool exist_unfinished_tasks(bool *complete[], int size)
 {
     for (int i = 0; i < size; i++)
     {
-        if (!*(complete[i])) {
+        if (!*(complete[i])) 
+        {
             return true;
         }
     }

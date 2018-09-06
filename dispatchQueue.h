@@ -15,15 +15,18 @@
     
 #define error_exit(MESSAGE)     perror(MESSAGE), exit(EXIT_FAILURE)
 
-    typedef enum { // whether dispatching a task synchronously or asynchronously
+    typedef enum 
+    { // whether dispatching a task synchronously or asynchronously
         ASYNC, SYNC
     } task_dispatch_type_t;
     
-    typedef enum { // The type of dispatch queue.
+    typedef enum 
+    { // The type of dispatch queue.
         CONCURRENT, SERIAL
     } queue_type_t;
 
-    typedef struct task {
+    typedef struct task 
+    {
         char name[64];              // to identify it when debugging
         void (*work)(void *);       // the function to perform
         void *params;               // parameters to pass to the function
@@ -36,12 +39,13 @@
     typedef struct dispatch_queue_thread_t dispatch_queue_thread_t; // the dispatch queue thread type
     // The reason for these is really weird ^, just use the [ typedef struct foo {...} foo; ] in the furure
 
-    typedef struct thread_pool {
+    typedef struct thread_pool 
+    {
         dispatch_queue_thread_t *top_thread;
-        dispatch_queue_thread_t *delegate_thread;
     } thread_pool_t;
 
-    struct dispatch_queue_thread_t {
+    struct dispatch_queue_thread_t 
+    {
         dispatch_queue_t *queue;// the queue this thread is associated with
         pthread_t pthread;       // the thread which runs the task
         sem_t *thread_semaphore; // the semaphore the thread waits on until a task is allocated
@@ -49,16 +53,19 @@
         struct dispatch_queue_thread_t *next_thread; // The next thread in the thread pool
     };
 
-    typedef struct in_progress {
+    typedef struct in_progress 
+    {
         struct in_progress *next;
         bool *complete;
     } in_progress_t;
 
-    typedef struct in_progress_list {
+    typedef struct in_progress_list 
+    {
         in_progress_t *head;
     } in_progress_list_t;
 
-    struct dispatch_queue_t {
+    struct dispatch_queue_t 
+    {
         queue_type_t queue_type;            // the type of queue - serial or concurrent
         task_t *head_task;
         task_t *tail_task;
