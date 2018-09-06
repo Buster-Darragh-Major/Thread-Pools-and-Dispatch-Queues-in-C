@@ -285,6 +285,8 @@ void *work_wrapper(wrapper_args_t *args)
 {
     (args->work)(args->params); // Do the work
     *(args->ready) = true; // set ready to true
+
+    free(args);
 }
 
 // Creates a task. work is the function to be called when the task is executed, param is a pointer to
@@ -360,6 +362,8 @@ void *pushback_wrapper(pushback_wrapper_args_t *args)
     pthread_mutex_lock(&pool_lock); 
     push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
     *(args->complete) = true;
+
+    free(args);
 }
 
 void add_in_progress_list(in_progress_list_t *list, bool *complete)
