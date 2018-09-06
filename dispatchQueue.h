@@ -49,11 +49,21 @@
         struct dispatch_queue_thread_t *next_thread; // The next thread in the thread pool
     };
 
+    typedef struct in_progress {
+        struct in_progress *next;
+        bool *complete;
+    } in_progress_t;
+
+    typedef struct in_progress_list {
+        in_progress_t *head;
+    } in_progress_list_t;
+
     struct dispatch_queue_t {
         queue_type_t queue_type;            // the type of queue - serial or concurrent
         task_t *head_task;
         task_t *tail_task;
-        thread_pool_t *thread_pool;          // The queues associated thread pool
+        thread_pool_t *thread_pool;         // The queues associated thread pool
+        in_progress_list_t *in_progress_list;
     };
     
     task_t *task_create(void (*)(void *), void *, char*);

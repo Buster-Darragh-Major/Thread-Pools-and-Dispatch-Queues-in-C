@@ -18,6 +18,7 @@
 // todo: make local?
 pthread_mutex_t pool_lock;
 pthread_mutex_t queue_lock;
+pthread_mutex_t in_progress_lock;
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
 {
@@ -189,6 +190,7 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queue_type)
 {
     dispatch_queue_t *return_queue = malloc(sizeof(dispatch_queue_t));
     return_queue->queue_type = queue_type;
+    return_queue->in_progress_list = malloc(sizeof(in_progress_list_t));
 
     thread_pool_t *pool = malloc(sizeof(thread_pool_t)); // thead pool for associated queue
     pool->top_thread = NULL;
@@ -337,6 +339,25 @@ void *pushback_wrapper(pushback_wrapper_args_t *args)
     *(args->complete) = true;
 }
 
+void add_in_progress_list(in_progress_list_t *list, bool *complete)
+{
+    in_progress_t *in_progress = malloc(sizeof(in_progress_t));
+    in_progress->complete = complete;
+
+    if (list->head == NULL)
+    {
+        list->head = in_progress;
+        return;
+    }
+
+    in_progress_t *current = list->head;
+    while (current->next != NULL)
+    {
+        current = current->next;
+    }
+    current->next = in_progress;
+}
+
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function
 // returns immediately, the task will be dispatched sometime in the future.
 void dispatch_async(dispatch_queue_t *queue, task_t *task)
@@ -356,6 +377,7 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
         pushback_args->thread = thread;
         pushback_args->queue = queue;
         pushback_args->complete = &(task->complete);
+        add_in_progress_list(queue->in_progress_list, &(task->complete));
 
         task->work = (void (*)(void *))pushback_wrapper; // "Overwrite" current task work args
         task->params = pushback_args; // "Overwrite" current task args
@@ -367,6 +389,7 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
     }
     else // All threads are currently occupied
     {
+        add_in_progress_list(queue->in_progress_list, &(task->complete));
         enqueue(queue, task); // Queue the task anyway
         #ifdef DEBUG
         printf(RED "Thread pool is empty!\n" RESET);
@@ -377,48 +400,42 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
     
 }
 
-
-bool contains_incomplete_tasks(task_t *tasks[], int size) {
+bool exist_unfinished_tasks(bool *complete[], int size)
+{
     for (int i = 0; i < size; i++)
     {
-        if (tasks[i]->complete == false)
-        {
-            return false;
+        if (!*(complete[i])) {
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 // Waits (blocks) until all tasks on the queue have completed. If new tasks are added to the queue
 // after this is called they are ignored.
 void dispatch_queue_wait(dispatch_queue_t *queue)
 {
-    pthread_mutex_lock(&queue_lock);
-
-    task_t *task = queue->head_task;
-    int number_of_tasks = 0;
-
-    // Determine lengt of list
-    while (task != NULL)
+    pthread_mutex_lock(&in_progress_lock);
+    // Make a "copy" of the current list of boolean pointers, we can make it an array this time as fixed size
+    int num_of_tasks = 0;
+    in_progress_t *in_progress = queue->in_progress_list->head;
+    while (in_progress != NULL)
     {
-        number_of_tasks++;
-        task = task->next_task;
+        num_of_tasks++;
+        in_progress = in_progress->next;
     }
 
-    // Make array of tasks big enough to fit all current tasks
-    task = queue->head_task;
-
-    task_t* tasks[number_of_tasks];
-    for (int i = 0; i < number_of_tasks; i++)
+    in_progress = queue->in_progress_list->head;
+    bool *in_progress_array[num_of_tasks];
+    for (int i = 0; i < num_of_tasks; i++)
     {
-        tasks[i] = task;
-        task = task->next_task;
+        in_progress_array[i] = in_progress->complete;
+        in_progress = in_progress->next;
     }
 
-    pthread_mutex_unlock(&queue_lock);
-
+    pthread_mutex_unlock(&in_progress_lock);
     // Wait while the array contains tasks that are incomplete
-    while(contains_incomplete_tasks(tasks, number_of_tasks));
+    while(exist_unfinished_tasks(in_progress_array, num_of_tasks));
 }
 
 // Executes the work function number of times (in parallel if the queue is CONCURRENT ). Each
