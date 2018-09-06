@@ -11,6 +11,7 @@
 void print_stuff(void *i)
 {
     int *num = (int*)i;
+    sleep(1);
     printf("%d:\tCan be printed in any order\n", *num);
 }
 
@@ -38,7 +39,7 @@ int main(int argc, char** argv)
     *i4 = 4;
     task4 = task_create(print_stuff, (void *)i4, "print");
     int *i5 = malloc(sizeof(int));
-    *i5 = 4;
+    *i5 = 5;
     task5 = task_create(print_stuff, (void *)i5, "print");
     
     dispatch_async(dispatch_queue, task1);
@@ -46,6 +47,9 @@ int main(int argc, char** argv)
     dispatch_async(dispatch_queue, task3);
     dispatch_async(dispatch_queue, task4);
     dispatch_async(dispatch_queue, task5);
-    sleep(1);
+    printf("All tasks dipatched\n");
+    sleep(7);
+    dispatch_async(dispatch_queue, task1);
+    sleep(3);
 
 }
