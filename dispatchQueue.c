@@ -114,31 +114,6 @@ bool is_empty(thread_pool_t *thread_pool)
     }
 }
 
-typedef struct pushback_wrapper_args 
-{
-    void (*work)(void *);
-    void *params;
-    dispatch_queue_t *queue;
-    dispatch_queue_thread_t *thread;
-    bool *complete;
-} pushback_wrapper_args_t;
-
-// This wrapper function is intended to take a piece of work and its arguments, along with a reference to that piece 
-// of work's disptach_queue_thread_t and dispatch_queue_t, and to push them back onto the stack when the work is 
-// completed. This work itself could potentially be either a synchronous or asynchronous task, but never the less
-// the task will onlY have it's thread pushed back onto the thread pool on completion.
-void *pushback_wrapper(pushback_wrapper_args_t *args) 
-{
-    (args->work)(args->params); // Do the work
-    // Lock the pool, this will be unlocked when the wrapped run_task wants to unlock it, i.e. when it has identified
-    // no further unclaimed tasks and cannot repush/repop itself.
-    pthread_mutex_lock(&pool_lock); 
-    push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
-    *(args->complete) = true;
-
-    free(args);
-}
-
 struct run_task_args 
 {
     dispatch_queue_t *queue;
@@ -299,7 +274,7 @@ typedef struct wrapper_args
 {
     void (*work)(void *);
     void *params;
-    bool *ready;
+    sem_t *ready;
 } wrapper_args_t;
 
 
@@ -312,7 +287,7 @@ typedef struct wrapper_args
 void *sync_wrapper(wrapper_args_t *args)
 {
     (args->work)(args->params); // Do the work
-    *(args->ready) = true; // set ready to true TODO: make a semaphore
+    sem_post(args->ready); // set ready to true TODO: make a semaphore
 
     free(args);
 }
@@ -334,18 +309,43 @@ task_t *task_create(void (* work)(void *), void *param, char* name)
     return task;
 }
 
+typedef struct pushback_wrapper_args 
+{
+    void (*work)(void *);
+    void *params;
+    dispatch_queue_t *queue;
+    dispatch_queue_thread_t *thread;
+    bool *complete;
+} pushback_wrapper_args_t;
+
+// This wrapper function is intended to take a piece of work and its arguments, along with a reference to that piece 
+// of work's disptach_queue_thread_t and dispatch_queue_t, and to push them back onto the stack when the work is 
+// completed. This work itself could potentially be either a synchronous or asynchronous task, but never the less
+// the task will onlY have it's thread pushed back onto the thread pool on completion.
+void *pushback_wrapper(pushback_wrapper_args_t *args) 
+{
+    (args->work)(args->params); // Do the work
+    // Lock the pool, this will be unlocked when the wrapped run_task wants to unlock it, i.e. when it has identified
+    // no further unclaimed tasks and cannot repush/repop itself.
+    pthread_mutex_lock(&pool_lock); 
+    push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
+    *(args->complete) = true;
+
+    free(args);
+}
+
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function does
 // not return to the calling thread until the task has been completed.
 void dispatch_sync(dispatch_queue_t *queue, task_t *task)
 {
-    bool ready = false;
+    sem_t *ready = malloc(sizeof(sem_t));
 
     // Create wrapper_args instance with the given task function and parameters, as well as the
     // previously initialized boolean ready.
     wrapper_args_t *args = malloc(sizeof(wrapper_args_t));
     args->params = task->params;
     args->work = task->work;
-    args->ready = &ready;
+    args->ready = ready;
 
     // For synchronous dispatch, create a wrapper function that is able to indicate the tate or "readiness"
     // of the given task function. We will give the task function to this wrapper function as well as some
@@ -360,7 +360,7 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
    
     // Wait for the referenced ready varable to turn to true before continuing, indicating the completion of the task.
     // TODO: make semaphore
-    while (!ready);
+    sem_wait(ready);
 }
 
 void add_in_progress_list(in_progress_list_t *list, bool *complete)
