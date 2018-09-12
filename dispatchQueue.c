@@ -18,6 +18,7 @@
 pthread_mutex_t pool_lock;
 pthread_mutex_t queue_lock;
 pthread_mutex_t in_progress_lock;
+// TODO: move task destruction to after its finished
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
 {
@@ -113,11 +114,45 @@ bool is_empty(thread_pool_t *thread_pool)
     }
 }
 
+typedef struct pushback_wrapper_args 
+{
+    void (*work)(void *);
+    void *params;
+    dispatch_queue_t *queue;
+    dispatch_queue_thread_t *thread;
+    bool *complete;
+} pushback_wrapper_args_t;
+
+// This wrapper function is intended to take a piece of work and its arguments, along with a reference to that piece 
+// of work's disptach_queue_thread_t and dispatch_queue_t, and to push them back onto the stack when the work is 
+// completed. This work itself could potentially be either a synchronous or asynchronous task, but never the less
+// the task will onlY have it's thread pushed back onto the thread pool on completion.
+void *pushback_wrapper(pushback_wrapper_args_t *args) 
+{
+    (args->work)(args->params); // Do the work
+    // Lock the pool, this will be unlocked when the wrapped run_task wants to unlock it, i.e. when it has identified
+    // no further unclaimed tasks and cannot repush/repop itself.
+    pthread_mutex_lock(&pool_lock); 
+    push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
+    *(args->complete) = true;
+
+    free(args);
+}
+
 struct run_task_args 
 {
     dispatch_queue_t *queue;
     sem_t *semaphore;
 };
+
+// Destroys the task . Call this function as soon as a task has completed. All memory allocated to the
+// task should be returned.
+void task_destroy(task_t *task)
+{
+    // TODO: the error here is that the program eventually tries to free params which are 
+    // not wrapped in an args and are effectively the original args from the create task call.
+    free(task);
+}
 
 // This task is intended to be run in a thread which is meant to run tasks from a dispatch_queue_t.
 // It works by looping through andchecking a related semaphore to the thread which indicates whether
@@ -138,7 +173,8 @@ void *run_task(void* ptr)
 
         task_t *task = dequeue(args->queue);
         pthread_mutex_unlock(&queue_lock);
-        (task->work)(task->params); 
+        (task->work)(task->params);
+        task_destroy(task);
         // After this point the thread this runs in is pushed to the thread pool
         // ***NOTE*** The thread pool also becomes locked after the thread is pushed to allow for any potential
         // re-popping of the thread further down.
@@ -161,6 +197,7 @@ void *run_task(void* ptr)
             task_t *task = dequeue(args->queue);
             pthread_mutex_unlock(&queue_lock);
             (task->work)(task->params); // Do the extra work
+            task_destroy(task);
             task->complete = true;
 
             pthread_mutex_lock(&queue_lock); // Ensures that checking if queue is empty and popping tasks is atomic
@@ -232,15 +269,6 @@ dispatch_queue_t *dispatch_queue_create(queue_type_t queue_type)
 // released and returned.
 void dispatch_queue_destroy(dispatch_queue_t *queue)
 {
-    // Loop through and free tasks
-    task_t *task = queue->head_task;
-    while(task != NULL)
-    {
-        task_t *task_to_destory = task;
-        task = task->next_task;
-        task_destroy(task_to_destory);
-    }
-
     // Loop through and destory all in_progress elements
     in_progress_list_t *in_progress_list = queue->in_progress_list;
     in_progress_t *in_progress = in_progress_list->head;
@@ -278,13 +306,13 @@ typedef struct wrapper_args
 // This method is to be passed to a dispatch order desired to be synchronous. It is given an argument of
 // wrapper_args which contains a function to do work (work), parameters for the function (params) and a
 // pointer to a boolean variable (ready). The value of this pointer can be changed and will affect the 
-// state of the function that called / created the work_wrapper args struct instance. The function runs
+// state of the function that called / created the sync_wrapper args struct instance. The function runs
 /// the given work function with the supplied params and then sets the ready to true, implying that any
 // other code that holds a reference to ready can identify a change in state of this particular function.
-void *work_wrapper(wrapper_args_t *args)
+void *sync_wrapper(wrapper_args_t *args)
 {
     (args->work)(args->params); // Do the work
-    *(args->ready) = true; // set ready to true
+    *(args->ready) = true; // set ready to true TODO: make a semaphore
 
     free(args);
 }
@@ -306,13 +334,6 @@ task_t *task_create(void (* work)(void *), void *param, char* name)
     return task;
 }
 
-// Destroys the task . Call this function as soon as a task has completed. All memory allocated to the
-// task should be returned.
-void task_destroy(task_t *task)
-{
-    free(task);
-}
-
 // Sends the task to the queue (which could be either CONCURRENT or SERIAL ). This function does
 // not return to the calling thread until the task has been completed.
 void dispatch_sync(dispatch_queue_t *queue, task_t *task)
@@ -330,7 +351,7 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
     // of the given task function. We will give the task function to this wrapper function as well as some
     // indicator (ready) to assert when the task is finished.
     task->params = args; // "Overwrite" the current task's arguments to be the created wrapper_args
-    task->work = (void (*)(void *))work_wrapper; // "Overwrite" the task's arguments to be the work wrapper function
+    task->work = (void (*)(void *))sync_wrapper; // "Overwrite" the task's arguments to be the work wrapper function
 
     // Here we call the asynchronous function with our altered task which actually contains the wrapper function.
     // While this still immediately returns, we now have the referenced ready variable, which we can use to
@@ -338,32 +359,8 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
     dispatch_async(queue, task);
    
     // Wait for the referenced ready varable to turn to true before continuing, indicating the completion of the task.
+    // TODO: make semaphore
     while (!ready);
-}
-
-typedef struct pushback_wrapper_args 
-{
-    void (*work)(void *);
-    void *params;
-    dispatch_queue_t *queue;
-    dispatch_queue_thread_t *thread;
-    bool *complete;
-} pushback_wrapper_args_t;
-
-// This wrapper function is intended to take a piece of work and its arguments, along with a reference to that piece 
-// of work's disptach_queue_thread_t and dispatch_queue_t, and to push them back onto the stack when the work is 
-// completed. This work itself could potentially be either a synchronous or asynchronous task, but never the less
-// the task will onlY have it's thread pushed back onto the thread pool on completion.
-void *pushback_wrapper(pushback_wrapper_args_t *args) 
-{
-    (args->work)(args->params); // Do the work
-    // Lock the pool, this will be unlocked when the wrapped run_task wants to unlock it, i.e. when it has identified
-    // no further unclaimed tasks and cannot repush/repop itself.
-    pthread_mutex_lock(&pool_lock); 
-    push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
-    *(args->complete) = true;
-
-    free(args);
 }
 
 void add_in_progress_list(in_progress_list_t *list, bool *complete)
@@ -463,6 +460,7 @@ void dispatch_queue_wait(dispatch_queue_t *queue)
 
     pthread_mutex_unlock(&in_progress_lock);
     // Wait while the array contains tasks that are incomplete
+    // TODO: make semaphre
     while(exist_unfinished_tasks(in_progress_array, num_of_tasks));
 }
 

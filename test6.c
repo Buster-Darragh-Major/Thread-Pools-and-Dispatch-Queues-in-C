@@ -23,6 +23,7 @@ int main(int argc, char** argv)
     task_t *task3;
     task_t *task4;
     task_t *task5;
+    task_t *task6;
 
     dispatch_queue = dispatch_queue_create(CONCURRENT);
 
@@ -41,6 +42,9 @@ int main(int argc, char** argv)
     int *i5 = malloc(sizeof(int));
     *i5 = 5;
     task5 = task_create(print_stuff, (void *)i5, "print");
+    int *i6 = malloc(sizeof(int));
+    *i6 = 6;
+    task6 = task_create(print_stuff, (void *)i6, "print");
     
     dispatch_async(dispatch_queue, task1);
     dispatch_async(dispatch_queue, task2);
@@ -48,8 +52,8 @@ int main(int argc, char** argv)
     dispatch_async(dispatch_queue, task4);
     dispatch_async(dispatch_queue, task5);
     printf("All tasks dipatched\n");
-    sleep(7);
-    dispatch_async(dispatch_queue, task1);
+    sleep(3);
+    dispatch_async(dispatch_queue, task6);
     sleep(3);
 
 }

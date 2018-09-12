@@ -26,4 +26,4 @@ testFor: testFor.c dispatchQueue.o
 	gcc testFor.c dispatchQueue.o -o testFor -pthread
 
 dispatchQueue.o: dispatchQueue.c dispatchQueue.h
-	gcc -c dispatchQueue.c
+	gcc -c dispatchQueue.c -DDEBUG
