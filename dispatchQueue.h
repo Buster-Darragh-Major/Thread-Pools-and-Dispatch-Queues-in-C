@@ -32,7 +32,7 @@
         void *params;               // parameters to pass to the function
         task_dispatch_type_t type;  // asynchronous or synchronous
         struct task *next_task;      // the text task in the queue of tasks (struct because typedef not "finished" yet)
-        bool complete;
+        sem_t *complete;
     } task_t;
 
     typedef struct dispatch_queue_t dispatch_queue_t; // the dispatch queue type
@@ -56,7 +56,7 @@
     typedef struct in_progress 
     {
         struct in_progress *next;
-        bool *complete;
+        sem_t *complete;
     } in_progress_t;
 
     typedef struct in_progress_list 

@@ -173,7 +173,7 @@ void *run_task(void* ptr)
             pthread_mutex_unlock(&queue_lock);
             (task->work)(task->params); // Do the extra work
             task_destroy(task);
-            task->complete = true;
+            sem_post(task->complete);
 
             pthread_mutex_lock(&queue_lock); // Ensures that checking if queue is empty and popping tasks is atomic
         }
@@ -304,7 +304,7 @@ task_t *task_create(void (* work)(void *), void *param, char* name)
     strcpy(task->name, name);
     task->params = param;
     task->work = work;
-    task->complete = false;
+    task->complete = malloc(sizeof(sem_t));
 
     return task;
 }
@@ -315,7 +315,7 @@ typedef struct pushback_wrapper_args
     void *params;
     dispatch_queue_t *queue;
     dispatch_queue_thread_t *thread;
-    bool *complete;
+    sem_t *complete;
 } pushback_wrapper_args_t;
 
 // This wrapper function is intended to take a piece of work and its arguments, along with a reference to that piece 
@@ -329,7 +329,7 @@ void *pushback_wrapper(pushback_wrapper_args_t *args)
     // no further unclaimed tasks and cannot repush/repop itself.
     pthread_mutex_lock(&pool_lock); 
     push(args->queue->thread_pool, args->thread); // Push task back onto thread pool
-    *(args->complete) = true;
+    sem_post(args->complete);
 
     free(args);
 }
@@ -363,7 +363,7 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
     sem_wait(ready);
 }
 
-void add_in_progress_list(in_progress_list_t *list, bool *complete)
+void add_in_progress_list(in_progress_list_t *list, sem_t *complete)
 {
     in_progress_t *in_progress = malloc(sizeof(in_progress_t));
     in_progress->complete = complete;
@@ -400,8 +400,8 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
         pushback_args->params = task->params;
         pushback_args->thread = thread;
         pushback_args->queue = queue;
-        pushback_args->complete = &(task->complete);
-        add_in_progress_list(queue->in_progress_list, &(task->complete));
+        pushback_args->complete = task->complete;
+        add_in_progress_list(queue->in_progress_list, task->complete);
 
         task->work = (void (*)(void *))pushback_wrapper; // "Overwrite" current task work args
         task->params = pushback_args; // "Overwrite" current task args
@@ -413,7 +413,7 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
     }
     else // All threads are currently occupied
     {
-        add_in_progress_list(queue->in_progress_list, &(task->complete));
+        add_in_progress_list(queue->in_progress_list, task->complete);
         enqueue(queue, task); // Queue the task anyway
         #ifdef DEBUG
         printf(RED "Thread pool is empty!\n" RESET);
@@ -424,16 +424,13 @@ void dispatch_async(dispatch_queue_t *queue, task_t *task)
     
 }
 
-bool exist_unfinished_tasks(bool *complete[], int size)
+bool check_all_finished(sem_t *complete[], int size)
 {
     for (int i = 0; i < size; i++)
     {
-        if (!*(complete[i])) 
-        {
-            return true;
-        }
+        // To exit every semaphore has to be waited for - order doesnt matter
+        sem_wait(complete[i]);
     }
-    return false;
 }
 
 // Waits (blocks) until all tasks on the queue have completed. If new tasks are added to the queue
@@ -441,6 +438,7 @@ bool exist_unfinished_tasks(bool *complete[], int size)
 void dispatch_queue_wait(dispatch_queue_t *queue)
 {
     pthread_mutex_lock(&in_progress_lock);
+    sem_t *in_progress_sem = malloc(sizeof(sem_t));
     // Make a "copy" of the current list of boolean pointers, we can make it an array this time as fixed size
     int num_of_tasks = 0;
     in_progress_t *in_progress = queue->in_progress_list->head;
@@ -451,7 +449,7 @@ void dispatch_queue_wait(dispatch_queue_t *queue)
     }
 
     in_progress = queue->in_progress_list->head;
-    bool *in_progress_array[num_of_tasks];
+    sem_t *in_progress_array[num_of_tasks];
     for (int i = 0; i < num_of_tasks; i++)
     {
         in_progress_array[i] = in_progress->complete;
@@ -461,7 +459,7 @@ void dispatch_queue_wait(dispatch_queue_t *queue)
     pthread_mutex_unlock(&in_progress_lock);
     // Wait while the array contains tasks that are incomplete
     // TODO: make semaphre
-    while(exist_unfinished_tasks(in_progress_array, num_of_tasks));
+    check_all_finished(in_progress_array, num_of_tasks);
 }
 
 // Executes the work function number of times (in parallel if the queue is CONCURRENT ). Each
