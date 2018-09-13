@@ -18,7 +18,6 @@
 pthread_mutex_t pool_lock;
 pthread_mutex_t queue_lock;
 pthread_mutex_t in_progress_lock;
-// TODO: move task destruction to after its finished
 
 void enqueue(dispatch_queue_t *queue, task_t *task)
 {
@@ -33,7 +32,6 @@ void enqueue(dispatch_queue_t *queue, task_t *task)
         current_tail->next_task = task; // Set next task of current tail to be the new tail
     }
     
-    // TODO: memory issues if the queue is empty bu a tail still exists?
     queue->tail_task = task; // Set new tail of queue to be current task
     #ifdef DEBUG
     printf(CYN "Task %p:\tQueued\n" RESET, task);
@@ -124,8 +122,7 @@ struct run_task_args
 // task should be returned.
 void task_destroy(task_t *task)
 {
-    // TODO: the error here is that the program eventually tries to free params which are 
-    // not wrapped in an args and are effectively the original args from the create task call.
+    free(task->complete);
     free(task);
 }
 
@@ -287,7 +284,7 @@ typedef struct wrapper_args
 void *sync_wrapper(wrapper_args_t *args)
 {
     (args->work)(args->params); // Do the work
-    sem_post(args->ready); // set ready to true TODO: make a semaphore
+    sem_post(args->ready);
 
     free(args);
 }
@@ -359,7 +356,6 @@ void dispatch_sync(dispatch_queue_t *queue, task_t *task)
     dispatch_async(queue, task);
    
     // Wait for the referenced ready varable to turn to true before continuing, indicating the completion of the task.
-    // TODO: make semaphore
     sem_wait(ready);
 }
 
@@ -458,7 +454,6 @@ void dispatch_queue_wait(dispatch_queue_t *queue)
 
     pthread_mutex_unlock(&in_progress_lock);
     // Wait while the array contains tasks that are incomplete
-    // TODO: make semaphre
     check_all_finished(in_progress_array, num_of_tasks);
 }
 
