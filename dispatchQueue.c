@@ -169,8 +169,8 @@ void *run_task(void* ptr)
             task_t *task = dequeue(args->queue);
             pthread_mutex_unlock(&queue_lock);
             (task->work)(task->params); // Do the extra work
+	    sem_post(task->complete);
             task_destroy(task);
-            sem_post(task->complete);
 
             pthread_mutex_lock(&queue_lock); // Ensures that checking if queue is empty and popping tasks is atomic
         }
